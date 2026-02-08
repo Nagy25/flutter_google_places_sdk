@@ -50,7 +50,11 @@ class FlutterGooglePlacesSdkWebPlugin extends FlutterGooglePlacesSdkPlatform {
   }
 
   @override
-  Future<void> initialize(String apiKey, {Locale? locale}) async {
+  Future<void> initialize(
+    String apiKey, {
+    Locale? locale,
+    bool? useNewApi,
+  }) async {
     if (_elementInjected) {
       return;
     }
@@ -85,7 +89,11 @@ class FlutterGooglePlacesSdkWebPlugin extends FlutterGooglePlacesSdkPlatform {
   }
 
   @override
-  Future<void> updateSettings(String apiKey, {Locale? locale}) async {
+  Future<void> updateSettings(
+    String apiKey, {
+    Locale? locale,
+    bool? useNewApi,
+  }) async {
     if (locale != null) {
       _language = locale.languageCode;
     }
@@ -174,27 +182,16 @@ class FlutterGooglePlacesSdkWebPlugin extends FlutterGooglePlacesSdkPlatform {
     return FetchPlaceResponse(respPlace);
   }
 
-  String? _mapField(PlaceField field) {
-    return switch (field) {
-      PlaceField.FormattedAddressAdr => 'adrFormatAddress',
-      PlaceField.UtcOffset => 'utcOffsetMinutes',
-      PlaceField.OpeningHours => 'regularOpeningHours',
-      PlaceField.CurrentOpeningHours => 'regularOpeningHours',
-      // SecondaryOpeningHours just don't exist on the javascript api;
-      // we're falling back to the regularOpeningHours as best-case scenario
-      PlaceField.SecondaryOpeningHours => 'regularOpeningHours',
-      PlaceField.WebsiteUri => 'websiteURI',
-      PlaceField.CurbsidePickup => 'hasCurbsidePickup',
-      PlaceField.Delivery => 'hasDelivery',
-      PlaceField.DineIn => 'hasDineIn',
-      PlaceField.Reservable => 'isReservable',
-      PlaceField.Takeout => 'hasTakeout',
-      PlaceField.IconMaskUrl => 'svgIconMaskURI',
-      _ => _UpperCamelCaseToLowerCamelCase(field.name),
-    };
-  }
+  // Map legacy fields to v2 when needed, while preserving supported fields
+  // (e.g. PlaceField.Location) that don't define an explicit v2 alias.
+  PlaceField? _mapToNew(PlaceField field) => field.forV2;
 
-  String _UpperCamelCaseToLowerCamelCase(String name) {
+  String? _mapField(PlaceField field) {
+    final mapped = _mapToNew(field);
+    if (mapped == null) {
+      return null;
+    }
+    final name = mapped.name;
     final first = name[0].toLowerCase();
     final rest = name.substring(1);
     return first + rest;
@@ -207,7 +204,6 @@ class FlutterGooglePlacesSdkWebPlugin extends FlutterGooglePlacesSdkPlatform {
     final fieldsMapped = fields
         .map(this._mapField)
         .nonNulls
-        .toSet() // Distinct
         .map((str) => str.toJS)
         .toList(growable: false)
         .toJS;
@@ -222,13 +218,21 @@ class FlutterGooglePlacesSdkWebPlugin extends FlutterGooglePlacesSdkPlatform {
     final result = await task?.toDart;
     final response = result as ext.FetchFieldsResponse?;
     final resultPlace = response?.place; // PlaceResult? Place?
-    return _parsePlace(resultPlace);
+    return _parsePlace(resultPlace, fields);
   }
 
-  inter.Place? _parsePlace(places.Place? place) {
+  inter.Place? _parsePlace(
+    places.Place? place,
+    List<inter.PlaceField> requestedFields,
+  ) {
     if (place == null) {
       return null;
     }
+
+    final shouldReadOpeningHours =
+        requestedFields.contains(inter.PlaceField.OpeningHours) ||
+        requestedFields.contains(inter.PlaceField.CurrentOpeningHours) ||
+        requestedFields.contains(inter.PlaceField.SecondaryOpeningHours);
 
     return inter.Place(
       id: place.id,
@@ -244,8 +248,10 @@ class FlutterGooglePlacesSdkWebPlugin extends FlutterGooglePlacesSdkPlatform {
       latLng: _parseLatLang(place.location),
       name: place.displayName,
       nameLanguageCode: null,
-      openingHours: _parseOpeningHours(place.openingHours),
-      phoneNumber: place.nationalPhoneNumber,
+      openingHours: shouldReadOpeningHours
+          ? _parseOpeningHours(place.openingHours)
+          : null,
+      phoneNumber: place.internationalPhoneNumber,
       photoMetadatas: place.photos
           ?.map((photo) => _parsePhotoMetadata(photo))
           .cast<PhotoMetadata>()
